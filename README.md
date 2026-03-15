@@ -202,3 +202,87 @@ The problem statement defines inputs, outputs, and integration points. Everythin
 - What threshold determines whether a well is flagged vs. automatically accepted?
 - How does a reviewer interact with the Culture Monitor upload?
 - What are the failure modes of your pipeline, and how would a user know when to distrust it?
+
+---
+
+# Well Classifier (`well_classifier.py`)
+
+A single-cell / bead counting pipeline for 96-well plates. Uses [StarDist](https://github.com/stardist/stardist) to detect objects in fluorescence images and classifies each well as **empty**, **single**, **multiple**, or **uncertain**.
+
+## How It Works
+
+1. **Image loading** — supports `.ome.zarr` (Squid default), `.tif/.tiff`, and `.png/.jpg`
+2. **StarDist detection** — runs the `2D_versatile_fluo` pretrained model to detect circular objects
+3. **Morphology scoring** — each detection is scored on size, circularity, edge proximity, and intensity
+4. **Well classification** — combines scores into a final count (0, 1, or 2+) with confidence
+5. **Flagging** — low-confidence results are flagged for human review in Culture Monitor
+
+## Output
+
+Each well returns:
+
+| Field        | Type  | Description                                       |
+|--------------|-------|---------------------------------------------------|
+| `well_id`    | str   | e.g. `"A1"`                                       |
+| `count`      | int   | 0, 1, or 2 (2 means "2 or more")                 |
+| `label`      | str   | `empty` / `single` / `multiple` / `uncertain`     |
+| `confidence` | float | 0.0 – 1.0                                         |
+| `flag`       | bool  | `True` → needs human review                       |
+| `reason`     | str   | Plain-English explanation when flagged            |
+
+## Installation
+
+> **Note:** The existing `requirements.txt` covers the OT-2 / PyLabRobot stack. StarDist and TensorFlow must be installed separately into the same environment.
+
+```bash
+# Activate your virtual environment first
+source monomer/bin/activate   # or: source venv/bin/activate
+
+# Standard (Linux / Windows / Intel Mac)
+pip install stardist tensorflow tifffile zarr ome-zarr scikit-image numpy
+
+# Apple Silicon (M1/M2/M3) — use the Metal-accelerated TF build
+pip install tensorflow-macos tensorflow-metal stardist tifffile zarr ome-zarr scikit-image numpy
+```
+
+The StarDist pretrained model (`2D_versatile_fluo`) **downloads automatically (~50 MB) on first run** — no manual setup needed.
+
+## Usage
+
+```bash
+python well_classifier.py <path_to_image_directory>
+```
+
+Image files must be named with the well ID as the stem:
+
+```
+A1.ome.zarr   B4.tif   C12.png   H9.tiff
+```
+
+Results are written to `<image_directory>/well_classification_results.json` and a ready-to-paste Culture Monitor upload prompt is printed to stdout.
+
+## Configuration
+
+Edit the constants at the top of `well_classifier.py` to match your microscope/bead setup:
+
+| Constant               | Default             | Description                                      |
+|------------------------|---------------------|--------------------------------------------------|
+| `STARDIST_MODEL`       | `2D_versatile_fluo` | StarDist pretrained model                        |
+| `BEAD_AREA_MIN_PX`     | `500`               | Min bead area in px² — below = debris            |
+| `BEAD_AREA_MAX_PX`     | `8000`              | Max bead area in px² — above = doublet           |
+| `CIRCULARITY_MIN`      | `0.70`              | Min circularity (1.0 = perfect circle)           |
+| `CONFIDENCE_AUTOFLAG`  | `0.80`              | Wells below this confidence are auto-flagged     |
+| `STARDIST_PROB_CUTOFF` | `0.40`              | StarDist detection probability threshold         |
+
+To calibrate `BEAD_AREA_MIN/MAX_PX`: open a known single-bead image in Fiji/napari, measure a few beads, and compute `π × r²` at your magnification.
+
+## TODO
+
+- [ ] **Multi-channel support** — let the user specify which channel index to use instead of auto-selecting the brightest
+- [ ] **Custom StarDist model** — support loading a fine-tuned model trained on lab-specific bead/cell images
+- [ ] **Batch / multi-plate support** — accept multiple plate directories and aggregate results into a single CSV/Excel report
+- [ ] **Calibration helper** — script to measure real bead diameters from a known single-bead plate and auto-set area thresholds
+- [ ] **GUI review tool** — lightweight napari-based viewer to step through flagged wells and accept/reject with a keypress
+- [ ] **Direct Culture Monitor upload** — call the MCP API directly instead of generating a copy-paste prompt
+- [ ] **Unit tests** — cover `classify_well`, `parse_well_id`, and `_squeeze_to_2d` with synthetic images
+- [ ] **Docker image** — containerise the full pipeline to avoid TensorFlow/StarDist setup friction
